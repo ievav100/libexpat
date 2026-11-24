@@ -1,0 +1,46 @@
+name: Verify scoped LLVM APT setup
+
+on:
+  push:
+    branches: [codex/verify-scoped-llvm-apt]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ievav100/libexpat
+          ref: 3683b030d3be578630aa05be308dc48ef0371126
+          persist-credentials: false
+      - name: Run the proposed LLVM source setup
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          paths = [
+              "clang-format", "clang-static-analyzer", "clang-tidy",
+              "coverity-scan", "fuzzing", "linux",
+          ]
+          recipes = []
+          for name in paths:
+              workflow = Path(f".github/workflows/{name}.yml").read_text().splitlines()
+              end = workflow.index("        sudo timeout 10m apt-get update")
+              start = max(index for index in range(end) if workflow[index] == "        source /etc/os-release")
+              recipe = "\n".join(line[8:] for line in workflow[start:end + 1]) + "\n"
+              recipes.append(recipe)
+          assert len(set(recipes)) == 1, "The six LLVM setup blocks differ"
+          Path(os.environ["RUNNER_TEMP"], "expat-llvm-test.sh").write_text(recipes[0])
+          PY
+          bash -e "$RUNNER_TEMP/expat-llvm-test.sh"
+      - name: Verify package origin and install clang-format
+        run: |
+          apt-cache policy clang-format-23
+          apt-cache madison clang-format-23 | grep -F 'https://apt.llvm.org/noble'
+          sudo timeout 10m apt-get install --yes --no-install-recommends clang-format-23
+          clang-format-23 --version
