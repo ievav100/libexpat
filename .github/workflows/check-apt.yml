@@ -1,0 +1,57 @@
+name: Check Ubuntu APT source key scopes
+
+on:
+  push:
+    branches: [codex/check-ubuntu-apt-trust]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Summarize active APT key scope
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from email.parser import Parser
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          print("Runner image:", os.getenv("ImageOS"), os.getenv("ImageVersion"))
+          apt = Path("/etc/apt")
+          parts = apt / "sources.list.d"
+          source_files = [apt / "sources.list", *sorted(parts.glob("*.list")), *sorted(parts.glob("*.sources"))]
+          stanza_types = re.compile(r"^\s*deb(?:-src)?\s+(?:\[([^\]]*)\]\s+)?(\S+)")
+          key_option = re.compile(r"(?:^|\s)signed-by=", re.IGNORECASE)
+          rows = []
+          for path in source_files:
+              if not path.is_file():
+                  continue
+              data = path.read_text()
+              if path.suffix == ".list":
+                  for line in data.splitlines():
+                      match = stanza_types.match(line)
+                      if match:
+                          options, uri = match.groups()
+                          rows.append((path.name, uri, bool(key_option.search(options or ""))))
+              else:
+                  data = "\n".join(line for line in data.splitlines() if not line.lstrip().startswith("#"))
+                  for paragraph in re.split(r"\n[ \t]*\n", data):
+                      fields = Parser().parsestr(paragraph.strip())
+                      if fields.get("Enabled", "yes").strip().lower() == "no":
+                          continue
+                      for uri in fields.get("URIs", "").split():
+                          rows.append((path.name, uri, bool((fields.get("Signed-By") or "").strip())))
+          if not rows:
+              raise SystemExit("No active APT entries found")
+          for filename, uri, scoped in rows:
+              endpoint = urlsplit(uri)
+              host = endpoint.hostname or endpoint.scheme
+              print(f"{filename}: {host} — {'explicit Signed-By' if scoped else 'no explicit Signed-By'}")
+          print(f"Active source URIs: {len(rows)}")
+          print(f"Without an explicit Signed-By: {sum(not scoped for _, _, scoped in rows)}")
+          PY
