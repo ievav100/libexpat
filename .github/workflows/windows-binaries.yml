@@ -30,10 +30,6 @@
 name: Build Windows binaries
 
 on:
-  pull_request:
-  push:
-  schedule:
-    - cron: '0 2 * * 5'  # Every Friday at 2am
   workflow_dispatch:
 
 permissions:
@@ -216,3 +212,46 @@ jobs:
         cd '/c/Program Files (x86)/Expat '*/Source/build
         cp -v "${cmake_build_type}/${expat_dll}" "tests/${cmake_build_type}/"
         ctest "${ctest_args[@]}"
+
+  attest_windows_binaries:
+    name: Attest Windows release packages
+    if: github.repository == 'ievav100/libexpat' && github.event_name == 'workflow_dispatch'
+    needs: windows_binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Request an OIDC token to sign provenance.
+      attestations: write  # Publish the signed provenance.
+    steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      with:
+        pattern: expat_win*_${{ github.sha }}
+        path: release-packages
+        merge-multiple: true
+
+    - name: Select Windows release packages
+      id: packages
+      shell: bash
+      env:
+        RELEASE_TAG: R_2_11_0  # Fixture for the version built at this commit.
+      run: |
+        version=${RELEASE_TAG#R_}
+        version=${version//_/.}
+        packages=()
+        for platform in win32 win64; do
+          for extension in exe zip; do
+            package="release-packages/expat-${platform}bin-${version}.${extension}"
+            test -s "$package"
+            packages+=("$package")
+          done
+        done
+        {
+          echo 'paths<<EOF'
+          printf '%s\n' "${packages[@]}"
+          echo EOF
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Generate Windows build provenance
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+      with:
+        subject-path: ${{ steps.packages.outputs.paths }}
